@@ -25,9 +25,8 @@
     Name of the resource group to which the database server is
     assigned.
 
-.PARAMETER azureRunAsConnectionName
-    Azure Automation Run As account name. Needs to be able to access
-    the $serverName.
+.PARAMETER subscriptionId
+    Set subscriptionId if the system assinged Indentity has access to more then one subscription.
 
 .PARAMETER serverName
     Azure SQL Database server name.
@@ -63,7 +62,7 @@
     -azureRunAsConnectionName AzureRunAsConnection
     -serverName myserver
     -databaseName myDatabase
-    -scalingSchedule [{WeekDays:[1], StartTime:”06:59:59″, StopTime:”17:59:59″, Edition: “Premium”, Tier: “P2″}, {WeekDays:[2,3,4,5], StartTime:”06:59:59″, StopTime:”17:59:59”, Edition: “Premium”, Tier: “P1”}]
+    -scalingSchedule [{WeekDays:[1], StartTime:"06:59:59", StopTime:"17:59:59", Edition: "Premium", Tier: "P2"}, {WeekDays:[2,3,4,5], StartTime:"06:59:59", StopTime:"17:59:59", Edition: "Premium", Tier: "P1"}]
     -scalingScheduleTimeZone W. Europe Standard Time
     -defaultEdition Standard
     -defaultTier S0
@@ -81,7 +80,7 @@ param(
 [string] $resourceGroupName,
 
 [parameter(Mandatory=$false)]
-[string] $azureRunAsConnectionName = "AzureRunAsConnection",
+[string] $subscriptionId,
 
 [parameter(Mandatory=$true)]
 [string] $serverName,
@@ -109,13 +108,32 @@ Write-Output "Script started." | timestamp
 $VerbosePreference = "Continue"
 $ErrorActionPreference = "Stop"
 
-#Authenticate with Azure Automation Run As account (service principal)
-$runAsConnectionProfile = Get-AutomationConnection -Name $azureRunAsConnectionName
-$environment = Get-AzureRmEnvironment -Name $environmentName
-Add-AzureRmAccount -Environment $environment -ServicePrincipal `
--TenantId $runAsConnectionProfile.TenantId `
--ApplicationId $runAsConnectionProfile.ApplicationId `
--CertificateThumbprint ` $runAsConnectionProfile.CertificateThumbprint | Out-Null
+#Check if a subscriptionId is specified    
+if($subscriptionId.Length -gt 0)
+{
+    try 
+    {
+            $AzureContext = (Connect-AzAccount -Identity -Subscription $subscriptionId).context
+    }
+    catch
+    {
+            Write-Output "There is no system-assigned user identity. Aborting."; 
+            exit
+    }
+}
+else 
+{
+    try 
+    {
+            $AzureContext = (Connect-AzAccount -Identity).context
+    }
+    catch
+    {
+            Write-Output "There is no system-assigned user identity. Aborting."; 
+            exit
+    }
+}
+
 Write-Output "Authenticated with Automation Run As Account."  | timestamp
 
 #Get current date/time and convert to $scalingScheduleTimeZone
@@ -135,11 +153,11 @@ Write-Output "Current day of week: $currentDayOfWeek." | timestamp
 # Get the scaling schedule for the current day of week
 $dayObjects = $stateConfig | Where-Object {$_.WeekDays -contains $currentDayOfWeek } `
 |Select-Object Edition, Tier, `
-@{Name="StartTime"; Expression = {[datetime]::ParseExact(($startTime.ToString("yyyy:MM:dd")+”:”+$_.StartTime),"yyyy:MM:dd:HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)}}, `
-@{Name="StopTime"; Expression = {[datetime]::ParseExact(($startTime.ToString("yyyy:MM:dd")+”:”+$_.StopTime),"yyyy:MM:dd:HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)}}
+@{Name="StartTime"; Expression = {[datetime]::ParseExact(($startTime.ToString("yyyy:MM:dd")+":"+$_.StartTime),"yyyy:MM:dd:HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)}}, `
+@{Name="StopTime"; Expression = {[datetime]::ParseExact(($startTime.ToString("yyyy:MM:dd")+":"+$_.StopTime),"yyyy:MM:dd:HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)}}
 
 # Get the database object
-$sqlDB = Get-AzureRmSqlDatabase `
+$sqlDB = Get-AzSqlDatabase `
 -ResourceGroupName $resourceGroupName `
 -ServerName $serverName `
 -DatabaseName $databaseName
@@ -155,9 +173,9 @@ if($dayObjects -ne $null) { # Scaling schedule found for this day
         if($sqlDB.CurrentServiceObjectiveName -ne $matchingObject.Tier -or $sqlDB.Edition -ne $matchingObject.Edition)
         {
             Write-Output "DB is not in the edition and/or tier of the scaling schedule. Changing!" | timestamp
-            $sqlDB | Set-AzureRmSqlDatabase -Edition $matchingObject.Edition -RequestedServiceObjectiveName $matchingObject.Tier | out-null
+            $sqlDB | Set-AzSqlDatabase -Edition $matchingObject.Edition -RequestedServiceObjectiveName $matchingObject.Tier | out-null
             Write-Output "Change to edition/tier as specified in scaling schedule initiated..." | timestamp
-            $sqlDB = Get-AzureRmSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
+            $sqlDB = Get-AzSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
             Write-Output "Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)" | timestamp
         }
         else
@@ -170,9 +188,9 @@ if($dayObjects -ne $null) { # Scaling schedule found for this day
         if($sqlDB.CurrentServiceObjectiveName -ne $defaultTier -or $sqlDB.Edition -ne $defaultEdition)
         {
             Write-Output "DB is not in the default edition and/or tier. Changing!" | timestamp
-            $sqlDB | Set-AzureRmSqlDatabase -Edition $defaultEdition -RequestedServiceObjectiveName $defaultTier | out-null
+            $sqlDB | Set-AzSqlDatabase -Edition $defaultEdition -RequestedServiceObjectiveName $defaultTier | out-null
             Write-Output "Change to default edition/tier initiated." | timestamp
-            $sqlDB = Get-AzureRmSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
+            $sqlDB = Get-AzSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
             Write-Output "Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)" | timestamp
         }
         else
@@ -187,9 +205,9 @@ else # Scaling schedule not found for this day
     if($sqlDB.CurrentServiceObjectiveName -ne $defaultTier -or $sqlDB.Edition -ne $defaultEdition)
     {
         Write-Output "DB is not in the default edition and/or tier. Changing!" | timestamp
-        $sqlDB | Set-AzureRmSqlDatabase -Edition $defaultEdition -RequestedServiceObjectiveName $defaultTier | out-null
+        $sqlDB | Set-AzSqlDatabase -Edition $defaultEdition -RequestedServiceObjectiveName $defaultTier | out-null
         Write-Output "Change to default edition/tier initiated." | timestamp
-        $sqlDB = Get-AzureRmSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
+        $sqlDB = Get-AzSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
         Write-Output "Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)" | timestamp
     }
     else
