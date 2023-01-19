@@ -1,19 +1,15 @@
-﻿Azure SQL Database - Scale using scheduled autoscaling
+Change
 ======================================================
-
-#Change
 This script it orginaly from Jorg Klein (jorgklein.com).
 However this version is update with the new AZ Powershell commands instead of the soon deprecated AzureRm powershell ones.
 Besides this the param azureRunAsConnectionName is removed in favor of using the default system assinged identity.
-            
+
+﻿Azure SQL Database - Scale using scheduled autoscaling
+======================================================
 
 This Azure Automation runbook enables vertically scaling of an Azure SQL Database according to a schedule. Autoscaling based on a schedule allows you to scale your solution according to predictable resource demand. For example you could require a high capacity
  (e.g. P2) on Monday during peak hours, while the rest of the week the traffic is decreased allowing you to scale down (e.g. P1). Outside business hours and during weekends you could then scale down further to a minimum (e.g. S0). This runbook can be scheduled
  to run hourly. The code checks the scalingSchedule parameter to decide if scaling needs to be executed, or if the database is in the desired state already and no work needs to be done. The script is Timezone aware.
-
-
-jorgklein.com for more information and a step-by-step setup guide
-
 
 
 
