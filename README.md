@@ -1,6 +1,10 @@
 ﻿Azure SQL Database - Scale using scheduled autoscaling
 ======================================================
 
+#Change
+This script it orginaly from Jorg Klein (jorgklein.com).
+However this version is update with the new AZ Powershell commands instead of the soon deprecated AzureRm powershell ones.
+Besides this the param azureRunAsConnectionName is removed in favor of using the default system assinged identity.
             
 
 This Azure Automation runbook enables vertically scaling of an Azure SQL Database according to a schedule. Autoscaling based on a schedule allows you to scale your solution according to predictable resource demand. For example you could require a high capacity
@@ -11,9 +15,6 @@ This Azure Automation runbook enables vertically scaling of an Azure SQL Databas
 jorgklein.com for more information and a step-by-step setup guide
 
 
- 
-
- 
 
 
 <#   
@@ -59,15 +60,6 @@ jorgklein.com for more information and a step-by-step setup guide
     Name of the resource group to which the database server is 
 
     assigned.
-
-
-
-.PARAMETER azureRunAsConnectionName
-
-    Azure Automation Run As account name. Needs to be able to access
-
-    the $serverName.
-
 
 
  .PARAMETER serverName  
@@ -136,8 +128,6 @@ jorgklein.com for more information and a step-by-step setup guide
 
         -resourceGroupName myResourceGroup
 
-        -azureRunAsConnectionName AzureRunAsConnection
-
         -serverName myserver
 
         -databaseName myDatabase
@@ -160,249 +150,7 @@ jorgklein.com for more information and a step-by-step setup guide
 
 .NOTES   
 
-    Author: Jorg Klein
+    Original Author: Jorg Klein
+    New Author: Ferron Nijland      
+    Last Update: 19/01/2023   
 
-    Last Update: 18/09/2017   
-
-#>  
-
-param(
-
-[parameter(Mandatory=$true)]
-
-[string] $resourceGroupName,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $azureRunAsConnectionName,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $serverName,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $databaseName,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $scalingSchedule,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $scalingScheduleTimeZone,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $defaultEdition,
-
-
-
-[parameter(Mandatory=$true)]
-
-[string] $defaultTier
-
-)
-
-
-
-Write-Output 'Script started.'
-
-
-
-#Authenticate with Azure Automation Run As account (service principal)  
-
-$runAsConnectionProfile = Get-AutomationConnection `
-
--Name $azureRunAsConnectionName
-
-Add-AzureRmAccount -ServicePrincipal `
-
--TenantId $runAsConnectionProfile.TenantId `
-
--ApplicationId $runAsConnectionProfile.ApplicationId `
-
--CertificateThumbprint ` $runAsConnectionProfile.CertificateThumbprint | Out-Null
-
-Write-Output 'Authenticated with Automation Run As Account.'
-
-
-
-#Get current date/time and convert to $scalingScheduleTimeZone
-
-$stateConfig = $scalingSchedule | ConvertFrom-Json
-
-$startTime = Get-Date
-
-Write-Output 'Azure Automation local time: $startTime.'
-
-$toTimeZone = [System.TimeZoneInfo]::FindSystemTimeZoneById($scalingScheduleTimeZone)
-
-Write-Output 'Time zone to convert to: $toTimeZone.'
-
-$newTime = [System.TimeZoneInfo]::ConvertTime($startTime, $toTimeZone)
-
-Write-Output 'Converted time: $newTime.'
-
-$startTime = $newTime
-
-
-
-#Get current day of week, based on converted start time
-
-$currentDayOfWeek = [Int]($startTime).DayOfWeek
-
-Write-Output 'Current day of week: $currentDayOfWeek.'
-
-
-
-# Get the scaling schedule for the current day of week
-
-$dayObjects = $stateConfig | Where-Object {$_.WeekDays -contains $currentDayOfWeek } `
-
-|Select-Object Edition, Tier, `
-
-@{Name='StartTime'; Expression = {[datetime]::ParseExact($_.StartTime,'HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)}}, `
-
-@{Name='StopTime'; Expression = {[datetime]::ParseExact($_.StopTime,'HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)}}
-
-
-
-# Get the database object
-
-$sqlDB = Get-AzureRmSqlDatabase `
-
--ResourceGroupName $resourceGroupName `
-
--ServerName $serverName `
-
--DatabaseName $databaseName
-
-Write-Output 'DB name: $($sqlDB.DatabaseName)'
-
-Write-Output 'Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)'
-
-
-
-if($dayObjects -ne $null) { # Scaling schedule found for this day
-
-    # Get the scaling schedule for the current time. If there is more than one available, pick the first
-
-    $matchingObject = $dayObjects | Where-Object { ($startTime -ge $_.StartTime) -and ($startTime -lt $_.StopTime) } | Select-Object -First 1
-
-    if($matchingObject -ne $null)
-
-    {
-
-        Write-Output 'Scaling schedule found. Check if current edition & tier is matching...'
-
-        if($sqlDB.CurrentServiceObjectiveName -ne $matchingObject.Tier -or $sqlDB.Edition -ne $matchingObject.Edition)
-
-        {
-
-            Write-Output 'DB is not in the edition and/or tier of the scaling schedule. Changing!'
-
-            $sqlDB | Set-AzureRmSqlDatabase -Edition $matchingObject.Edition -RequestedServiceObjectiveName $matchingObject.Tier | out-null
-
-            Write-Output 'Change to edition/tier as specified in scaling schedule initiated...'
-
-            $sqlDB = Get-AzureRmSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
-
-            Write-Output 'Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)'
-
-        } 
-
-        else 
-
-        {
-
-            Write-Output 'Current DB tier and edition matches the scaling schedule already. Exiting...'
-
-        }
-
-    }
-
-    else { # Scaling schedule not found for current time
-
-        Write-Output 'No matching scaling schedule time slot for this time found. Check if current edition/tier matches the default...'
-
-        if($sqlDB.CurrentServiceObjectiveName -ne $defaultTier -or $sqlDB.Edition -ne $defaultEdition)
-
-        {
-
-            Write-Output 'DB is not in the default edition and/or tier. Changing!'
-
-            $sqlDB | Set-AzureRmSqlDatabase -Edition $defaultEdition -RequestedServiceObjectiveName $defaultTier | out-null
-
-            Write-Output 'Change to default edition/tier initiated.'
-
-            $sqlDB = Get-AzureRmSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
-
-            Write-Output 'Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)'
-
-        }
-
-        else
-
-        {
-
-            Write-Output 'Current DB tier and edition matches the default already. Exiting...'
-
-        }
-
-    }
-
-}
-
-else # Scaling schedule not found for this day
-
-{
-
-    Write-Output 'No matching scaling schedule for this day found. Check if current edition/tier matches the default...'
-
-    if($sqlDB.CurrentServiceObjectiveName -ne $defaultTier -or $sqlDB.Edition -ne $defaultEdition)
-
-    {
-
-        Write-Output 'DB is not in the default edition and/or tier. Changing!'
-
-        $sqlDB | Set-AzureRmSqlDatabase -Edition $defaultEdition -RequestedServiceObjectiveName $defaultTier | out-null
-
-        Write-Output 'Change to default edition/tier initiated.'
-
-        $sqlDB = Get-AzureRmSqlDatabase -ResourceGroupName $resourceGroupName -ServerName $serverName -DatabaseName $databaseName
-
-        Write-Output 'Current DB status: $($sqlDB.Status), edition: $($sqlDB.Edition), tier: $($sqlDB.CurrentServiceObjectiveName)'
-
-    }
-
-    else
-
-    {
-
-        Write-Output 'Current DB tier and edition matches the default already. Exiting...'
-
-    }
-
-}
-
-
-
-Write-Output 'Script finished.'
-
-
-        
-    
-TechNet gallery is retiring! This script was migrated from TechNet script center to GitHub by Microsoft Azure Automation product group. All the Script Center fields like Rating, RatingCount and DownloadCount have been carried over to Github as-is for the migrated scripts only. Note : The Script Center fields will not be applicable for the new repositories created in Github & hence those fields will not show up for new Github repositories.
